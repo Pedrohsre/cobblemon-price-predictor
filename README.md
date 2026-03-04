@@ -33,7 +33,7 @@ Python 3, pandas, scikit-learn, numpy, matplotlib, ipywidgets
 2. Run the cells
 3. Play with the interactive widgets
 
-Or try it on Google Colab: https://colab.research.google.com/drive/169_VaD8-YE-tdb-E-azmvhg72ZMacLG4?usp=sharing
+Or try it on website: https://cobblemon-price-predictor.streamlit.app/
 
 ## 📈 Item Stats
 
@@ -87,7 +87,7 @@ Python 3, pandas, scikit-learn, numpy, matplotlib, ipywidgets
 2. Execute as células
 3. Brinque com os widgets interativos
 
-Ou teste no Google Colab: https://colab.research.google.com/drive/169_VaD8-YE-tdb-E-azmvhg72ZMacLG4?usp=sharing
+Ou teste no site: https://cobblemon-price-predictor.streamlit.app/
 
 ## 📈 Stats do Item
 
