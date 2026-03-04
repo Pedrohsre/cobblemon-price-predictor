@@ -220,7 +220,7 @@ st.dataframe(
         'MAE': 'PD {:,.0f}',
         'R²': '{:.4f}'
     }).background_gradient(subset=['R²'], cmap='Greens'),
-    use_container_width=True
+    width='stretch'
 )
 
 # Footer
