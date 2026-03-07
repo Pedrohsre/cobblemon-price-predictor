@@ -6,6 +6,104 @@ from sklearn.linear_model import Ridge, LinearRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
+from datetime import datetime
+import json
+import os
+from github import Github
+import base64
+
+# ============================================================================
+# GITHUB INTEGRATION
+# ============================================================================
+
+@st.cache_resource
+def connect_to_github():
+    """Conecta ao GitHub usando token do Streamlit Secrets"""
+    try:
+        # Verificar se há configuração do GitHub
+        if "github_token" in st.secrets:
+            token = st.secrets["github_token"]
+            g = Github(token)
+            
+            # Pegar repo e arquivo configurados
+            repo_name = st.secrets.get("github_repo", "")
+            file_path = st.secrets.get("github_file_path", "user_submissions.json")
+            
+            if repo_name:
+                repo = g.get_repo(repo_name)
+                return {"github": g, "repo": repo, "file_path": file_path}
+        
+        return None
+    except Exception as e:
+        st.warning(f"GitHub não configurado: {e}")
+        return None
+
+def load_from_github(github_config):
+    """Carrega dados do arquivo JSON no GitHub"""
+    try:
+        if not github_config:
+            return []
+        
+        repo = github_config["repo"]
+        file_path = github_config["file_path"]
+        
+        # Tentar obter o arquivo
+        try:
+            file_content = repo.get_contents(file_path)
+            content = base64.b64decode(file_content.content).decode('utf-8')
+            return json.loads(content)
+        except Exception:
+            # Arquivo não existe ainda
+            return []
+            
+    except Exception as e:
+        st.warning(f"GitHub não configurado: {e}")
+        return []
+
+def save_to_github(github_config, data, commit_message="Add new submission"):
+    """Salva dados no arquivo JSON no GitHub"""
+    try:
+        if not github_config:
+            return False
+        
+        repo = github_config["repo"]
+        file_path = github_config["file_path"]
+        
+        # Converter dados para JSON
+        json_content = json.dumps(data, indent=2, ensure_ascii=False)
+        
+        # Verificar se arquivo já existe
+        try:
+            file_content = repo.get_contents(file_path)
+            # Atualizar arquivo existente
+            repo.update_file(
+                file_path,
+                commit_message,
+                json_content,
+                file_content.sha
+            )
+        except Exception:
+            # Criar novo arquivo
+            repo.create_file(
+                file_path,
+                commit_message,
+                json_content
+            )
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Erro ao salvar no GitHub: {e}")
+        return False
+
+# Conectar ao GitHub (ou None se não configurado)
+github_config = connect_to_github()
+if github_config:
+    st.sidebar.success("GitHub conectado")
+else:
+    st.sidebar.info("ℹUsando armazenamento local (JSON)")
+
+# ============================================================================
 
 # Configuração da página
 st.set_page_config(
@@ -32,10 +130,10 @@ def calcular_dps(atk_base, atk_speed_percent, sharpness_level, base_aps=1.6):
     return round(dps_com_passiva, 2)
 
 # Dataset
-@st.cache_data
 def load_data():
+    # Dataset base (histórico)
     data = [
-        {'sharp': 4, 'ad': 6.94, 'as': 133.21, 'mending': 0, 'price': 1500000},
+        {'sharp': 4, 'ad': 6.94, 'as': 133.21, 'mending': 0, 'price': 1500000}, 
         {'sharp': 4, 'ad': 6.7, 'as': 142.69, 'mending': 0, 'price': 1500000},
         {'sharp': 4, 'ad': 6.88, 'as': 130.56, 'mending': 0, 'price': 1200000},
         {'sharp': 4, 'ad': 6.95, 'as': 120.56, 'mending': 0, 'price': 1200000},
@@ -97,11 +195,49 @@ def load_data():
     ]
     
     df = pd.DataFrame(data)
+    
+    # Carregar dados submetidos pelos usuários
+    user_data = []
+    
+    # Tentar carregar do GitHub primeiro
+    if github_config:
+        try:
+            user_data = load_from_github(github_config)
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao carregar do GitHub: {e}")
+    
+    # Fallback para JSON local se GitHub não estiver configurado ou falhar
+    if not user_data:
+        database_file = 'user_submissions.json'
+        if os.path.exists(database_file):
+            try:
+                with open(database_file, 'r', encoding='utf-8') as f:
+                    user_data = json.load(f)
+            except Exception as e:
+                st.warning(f"⚠️ Não foi possível carregar dados do JSON: {str(e)}")
+    
+    # Adicionar dados dos usuários ao dataset
+    if user_data:
+        try:
+            # Extrair apenas as colunas necessárias para o treinamento
+            user_df = pd.DataFrame([{
+                'sharp': item['sharp'],
+                'ad': item['ad'],
+                'as': item['as'],
+                'mending': item['mending'],
+                'price': item['price']
+            } for item in user_data])
+            
+            # Combinar com o dataset base
+            df = pd.concat([df, user_df], ignore_index=True)
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao processar dados dos usuários: {str(e)}")
+    
+    # Calcular DPS para todos os dados
     df['dps'] = df.apply(lambda row: calcular_dps(row['ad'], row['as'], row['sharp']), axis=1)
     return df
 
 # Treinar modelos
-@st.cache_resource
 def train_models(df):
     features = ['dps', 'mending']
     X = df[features]
@@ -139,7 +275,7 @@ st.sidebar.header("Item Stats")
 st.sidebar.markdown("Enter the Scizor Gauntlets attributes:")
 
 sharp = st.sidebar.selectbox("Sharpness", [4, 5], index=1)
-ad = st.sidebar.number_input("Attack Damage (AD)", min_value=5.0, max_value=7.5, value=6.5, step=0.01)
+ad = st.sidebar.number_input("Attack Damage (AD)", min_value=5.0, max_value=7.0, value=6.5, step=0.01)
 as_value = st.sidebar.number_input("Attack Speed (AS%)", min_value=120.0, max_value=150.0, value=140.0, step=0.1)
 mending = st.sidebar.checkbox("Mending", value=True)
 
@@ -203,6 +339,45 @@ with col2:
     st.metric("Average Price", f"PD {media:,.0f}")
     st.metric("Std Deviation", f"PD {np.std(list(predictions.values())):,.0f}")
 
+# Seção das últimas 10 adições
+#st.markdown("---")
+#st.subheader("🔥 Recent Community Submissions")
+
+# database_file = 'user_submissions.json'
+# if os.path.exists(database_file):
+#     with open(database_file, 'r', encoding='utf-8') as f:
+#         submissions = json.load(f)
+#     
+#     if submissions:
+#         # Pegar as últimas 10 submissões (mais recentes primeiro)
+#         recent_submissions = submissions[-10:][::-1]
+#         
+#         # Criar um card para cada submissão
+#         for idx, item in enumerate(recent_submissions, 1):
+#             with st.container():
+#                 col1, col2, col3, col4 = st.columns([2, 3, 2, 2])
+#                 
+#                 with col1:
+#                     st.markdown(f"**👤 {item['submitted_by']}**")
+#                     st.caption(item['submitted_at'])
+#                 
+#                 with col2:
+#                     mending_emoji = "✨" if item['mending'] == 1 else "❌"
+#                     st.markdown(f"Sharp: **{item['sharp']}** | AD: **{item['ad']}** | AS: **{item['as']}%** | Mend: {mending_emoji}")
+#                 
+#                 with col3:
+#                     st.markdown(f"DPS: **{item.get('dps', 'N/A')}**")
+#                 
+#                 with col4:
+#                     st.markdown(f"💰 **PD {item['price']:,.0f}**")
+#                 
+#                 if idx < len(recent_submissions):
+#                     st.divider()
+#     else:
+#         st.info("No submissions yet. Be the first to contribute!")
+# else:
+#     st.info("No submissions yet. Be the first to contribute!")
+
 # Seção de métricas dos modelos
 st.markdown("---")
 st.subheader("Model Performance Metrics")
@@ -223,13 +398,170 @@ st.dataframe(
     width='stretch'
 )
 
+# Seção para adicionar novos dados ao database
+st.markdown("---")
+st.subheader("➕ Add New Item to Database")
+st.markdown("Contribute to the dataset by adding new item sales data")
+
+with st.expander("📝 Submit New Item Data", expanded=False):
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        st.markdown("**Item Attributes:**")
+        new_sharp = st.selectbox("Sharpness Level", [4, 5], key="new_sharp")
+        new_ad = st.number_input("Attack Damage (AD)", min_value=5.0, max_value=7.0, value=6.0, step=0.01, key="new_ad")
+        new_as = st.number_input("Attack Speed (AS%)", min_value=120.0, max_value=150.0, value=130.0, step=0.1, key="new_as")
+        new_mending = st.checkbox("Has Mending", key="new_mending")
+        new_price = st.number_input("Sale Price (PD)", min_value=0, max_value=100000000, value=1000000, step=50000, key="new_price")
+    
+    with col_b:
+        st.markdown("**Contributor Information:**")
+        nickname = st.text_input("Your Nickname/IGN", placeholder="Enter your name or in-game name", key="nickname")
+        
+        # Calcular DPS do novo item
+        new_dps = calcular_dps(new_ad, new_as, new_sharp)
+        st.info(f"**Calculated DPS:** {new_dps}")
+        
+        st.markdown("---")
+        
+        if st.button("💾 Submit to Database", type="primary", use_container_width=True):
+            if nickname.strip() == "":
+                st.error("⚠️ Please enter your nickname before submitting!")
+            else:
+                # Preparar os dados para salvar
+                new_entry = {
+                    'sharp': new_sharp,
+                    'ad': new_ad,
+                    'as': new_as,
+                    'mending': 1 if new_mending else 0,
+                    'price': new_price,
+                    'dps': new_dps,
+                    'submitted_by': nickname.strip(),
+                    'submitted_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                
+                success = False
+                
+                # Tentar salvar no GitHub primeiro
+                if github_config:
+                    try:
+                        # Carregar dados existentes do GitHub
+                        submissions = load_from_github(github_config)
+                        if submissions is None:
+                            submissions = []
+                        
+                        # Adicionar nova entrada
+                        submissions.append(new_entry)
+                        
+                        # Salvar no GitHub
+                        commit_msg = f"Add submission from {nickname.strip()}"
+                        if save_to_github(github_config, submissions, commit_msg):
+                            st.success(f"✅ Data successfully added to GitHub!\n\nSubmitted by: **{nickname}**\nDateTime: **{new_entry['submitted_at']}**")
+                            success = True
+                    except Exception as e:
+                        st.warning(f"⚠️ Erro ao salvar no GitHub: {e}")
+                
+                # Fallback para JSON local se GitHub não estiver configurado ou falhar
+                if not success:
+                    database_file = 'user_submissions.json'
+                    try:
+                        # Carregar dados existentes ou criar lista vazia
+                        if os.path.exists(database_file):
+                            with open(database_file, 'r', encoding='utf-8') as f:
+                                submissions = json.load(f)
+                        else:
+                            submissions = []
+                        
+                        # Adicionar nova entrada
+                        submissions.append(new_entry)
+                        
+                        # Salvar de volta ao arquivo
+                        with open(database_file, 'w', encoding='utf-8') as f:
+                            json.dump(submissions, f, indent=2, ensure_ascii=False)
+                        
+                        st.success(f"✅ Data successfully added to local database!\n\nSubmitted by: **{nickname}**\nDateTime: **{new_entry['submitted_at']}**")
+                        success = True
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error saving to database: {str(e)}")
+                
+                if success:
+                    st.info("🔄 Models will be retrained with your data on next prediction!")
+                    st.balloons()
+
+# Mostrar dados submetidos pelos usuários
+submissions = []
+
+# Tentar carregar do GitHub primeiro
+if github_config:
+    try:
+        submissions = load_from_github(github_config)
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao carregar submissions do GitHub: {e}")
+
+# Fallback para JSON local se GitHub não estiver configurado ou falhar
+if not submissions and os.path.exists('user_submissions.json'):
+    try:
+        with open('user_submissions.json', 'r', encoding='utf-8') as f:
+            submissions = json.load(f)
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao carregar submissions do JSON: {e}")
+
+# Exibir submissions se houver
+if submissions:
+    with st.expander("📋 View User Submissions", expanded=False):
+        submissions_df = pd.DataFrame(submissions)
+        # Reordenar colunas para melhor visualização
+        cols_order = ['submitted_at', 'submitted_by', 'sharp', 'ad', 'as', 'mending', 'dps', 'price']
+        submissions_df = submissions_df[cols_order]
+        
+        st.dataframe(
+            submissions_df.style.format({
+                'ad': '{:.2f}',
+                'as': '{:.2f}',
+                'dps': '{:.2f}',
+                'price': 'PD {:,.0f}'
+            }),
+            width='stretch'
+        )
+        
+        storage_type = "GitHub" if github_config else "Local JSON"
+        st.markdown(f"**Total Submissions:** {len(submissions)} | **Storage:** {storage_type}")
+
 # Footer
 st.markdown("---")
+
+# Contabilizar total de itens no dataset
+base_items = 59
+user_items = 0
+
+# Tentar contar do GitHub primeiro
+if github_config:
+    try:
+        github_data = load_from_github(github_config)
+        user_items = len(github_data) if github_data else 0
+    except:
+        pass
+
+# Fallback para JSON local
+if user_items == 0 and os.path.exists('user_submissions.json'):
+    try:
+        with open('user_submissions.json', 'r', encoding='utf-8') as f:
+            user_submissions_data = json.load(f)
+            user_items = len(user_submissions_data)
+    except:
+        pass
+
+total_items = base_items + user_items
+
+storage_info = "GitHub" if github_config else "Local storage"
 st.markdown(
-    """
+    f"""
     <div style='text-align: center; color: #666;'>
-        <p>Built with Machine Learning | Dataset: 59 historical items</p>
+        <p>Built with Machine Learning | Dataset: <strong>{total_items} items</strong> ({base_items} historical + {user_items} community)</p>
         <p>Server: <strong>play.cobblemondelta.com</strong></p>
+        <p style='font-size: 0.8em; margin-top: 10px;'>🤖 Models are automatically retrained with community contributions</p>
+        <p style='font-size: 0.8em;'>💾 Storage: {storage_info}</p>
     </div>
     """,
     unsafe_allow_html=True

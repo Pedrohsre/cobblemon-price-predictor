@@ -32,3 +32,9 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# Streamlit Secrets (NEVER COMMIT!)
+.streamlit/secrets.toml
+
+# Local database (optional - pode commitar se quiser backup)
+user_submissions.json
